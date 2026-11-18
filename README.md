@@ -1,68 +1,106 @@
-# video2doc
+# 🎬 video2doc
 
-Превращает видеоуроки (файл, ссылки YouTube или плейлист) в документ DOCX и PDF:
-скриншоты ключевых моментов и под каждым — текст субтитров этого участка.
+**English** | [Русский](README.ru.md)
 
-## Как выбираются скриншоты
+**Stop pausing tutorials to take notes.** video2doc turns YouTube videos and whole playlists into
+ready-to-print DOCX/PDF manuals with smart screenshots and timestamped subtitles.
 
-1. Находятся моменты смены кадра на экране.
-2. Скриншот берётся через ~1 с после смены и только когда картинка перестала меняться
-   (без размытых кадров перехода).
-3. Почти одинаковые кадры отбрасываются.
-4. Если кадр долго не меняется, всё равно делается скриншот не реже чем раз в 40 с.
-5. Можно добавить скриншоты в нужные моменты: `--at 01:20,05:43`.
+Perfect for lessons, tutorials, recipes, DIY guides, lectures, webinars and training videos —
+no AI, no API keys, no cost. Everything runs on your own computer.
 
-## Текст
+## ✨ Features
 
-Субтитры YouTube на языке оригинала. Если их нет — распознавание речи Whisper на своём компьютере.
+- 🔗 Works with a video file, one or several YouTube links, or an entire playlist
+- 🖼️ Smart screenshots — captured when the picture changes, never blurry, no duplicates
+- 📝 Text under every screenshot — YouTube subtitles in the original language, or local speech recognition (Whisper) when there are none
+- 📄 Output as Word (DOCX) and PDF, plus `.txt` and `.srt` subtitles
+- 📁 Neat folders: `Documents\video2doc\Project\Video\`
+- 🔁 Playlists resume where they stopped — finished videos are skipped
 
-## Установка (Windows)
+## 🖼️ How screenshots are chosen
 
-1. **Python 3.12** — с python.org, установщик **«Windows installer (64-bit)» (.exe)**, отметить «Add python.exe to PATH».
-   Если на компьютере есть более новый Python (3.14, 3.15), он не подойдёт — программа сама перезапустится через 3.12.
-2. **Библиотеки:**
+1. Detects moments when the picture on screen changes.
+2. Waits ~1 s after the change and takes the frame only once the image is stable (no blurry transitions).
+3. Drops near-identical frames.
+4. If the screen doesn't change for a long time, still takes a screenshot at least every 40 s.
+5. You can add your own moments: `--at 01:20,05:43`.
+
+## ⚙️ Installation (Windows)
+
+1. **Python 3.12** — from python.org, the **"Windows installer (64-bit)" (.exe)**, not .msix.
+   Tick **"Add python.exe to PATH"**. Newer Python (3.14, 3.15) is not supported yet —
+   if you have it, the program automatically restarts itself with 3.12.
+2. **Libraries:**
    ```
-   py -3.12 -m pip install faster-whisper python-docx yt-dlp imageio-ffmpeg docx2pdf
+   py -3.12 -m pip install -r requirements.txt
    ```
-3. **PDF:** нужен MS Word (через docx2pdf) или LibreOffice (`winget install TheDocumentFoundation.LibreOffice`).
-4. Положить `video2doc.py` и `video2doc.bat` в одну папку.
+3. **PDF export:** Microsoft Word (via `docx2pdf`, already in requirements) or LibreOffice
+   (`winget install TheDocumentFoundation.LibreOffice`).
+4. Put `video2doc.py` and `video2doc.bat` in the same folder.
 
-## Запуск
+Optional: `winget install DenoLand.Deno` — removes YouTube warnings and reduces download errors.
 
-Двойной щелчок по `video2doc.bat`. Программа спросит:
-1. Проект — номер из списка, новое название или Enter.
-2. Ссылку YouTube (можно несколько через пробел) или путь к видеофайлу.
-3. Если ссылка из плейлиста: Enter — только это видео, «все» — весь плейлист, или номера `12,33,49`.
+## ▶️ Usage
 
-Результат: `Документы\video2doc\Проект\Видео\` — `видео.docx`, `видео.pdf`, `frames\`, `transcript.txt`,
-`subtitles.srt`, `info.txt`. Для плейлиста — папки `001 - Название…`, файлы `playlist.txt` и `playlist_log.txt`.
-Повторный запуск плейлиста пропускает готовые видео.
+Double-click **`video2doc.bat`**. The program asks:
+1. **Project** — a number from the list, a new name, or Enter.
+2. **YouTube link** (several links separated by spaces) or a path to a video file.
+3. For a playlist link: Enter — only this video, `all` — the whole playlist, or numbers like `12,33,49`.
 
-## Командная строка
+The result folder opens automatically.
+
+### Command line
 
 ```
-py -3.12 video2doc.py урок.mp4
-py -3.12 video2doc.py "https://youtu.be/AAA" "https://youtu.be/BBB" --project FAIRINO
-py -3.12 video2doc.py "https://www.youtube.com/playlist?list=XXXX" --playlist --items 12,33,49
+py -3.12 video2doc.py lesson.mp4
+py -3.12 video2doc.py "https://youtu.be/AAA" "https://youtu.be/BBB" --project MyCourse
+py -3.12 video2doc.py "https://www.youtube.com/playlist?list=XXXX" --playlist --items 1-10
 ```
 
-| Параметр | Что делает |
+| Option | What it does |
 |---|---|
-| `--project` | папка проекта |
-| `--playlist`, `--items 1-10,15` | плейлист целиком или выбранные номера |
-| `--redo` | переделать готовые видео плейлиста |
-| `--at 01:20,05:43` | дополнительные скриншоты |
-| `--every 30` | скриншот каждые 30 с вместо поиска смены кадра |
-| `--threshold 0.15` | чувствительность смены кадра (меньше — больше скриншотов) |
-| `--dup 4` | порог «почти тот же кадр» (больше — меньше скриншотов) |
-| `--min-gap 4` / `--max-gap 40` | мин. / макс. интервал между скриншотами, с |
-| `--whisper`, `--model small` | распознавать речь даже при наличии субтитров; модель Whisper |
+| `--project` | project folder inside `Documents\video2doc` |
+| `--playlist`, `--items 1-10,15` | whole playlist or selected numbers |
+| `--redo` | redo videos that are already finished |
+| `--at 01:20,05:43` | extra screenshots at given moments |
+| `--every 30` | a screenshot every 30 s instead of change detection |
+| `--threshold 0.15` | change sensitivity (lower — more screenshots) |
+| `--dup 4` | "same frame" threshold (higher — fewer screenshots) |
+| `--min-gap 4` / `--max-gap 40` | min / max seconds between screenshots |
+| `--whisper`, `--model small` | use speech recognition even if subtitles exist; Whisper model |
 
-## Частые ошибки
+## 📂 Output
 
-| Сообщение | Решение |
+```
+Documents\video2doc\
+   My Course\                          ← project
+      Lesson title\                    ← one video = one folder
+         Lesson title.docx
+         Lesson title.pdf
+         frames\                       ← screenshots
+         transcript.txt                ← text with timestamps
+         subtitles.srt
+         info.txt                      ← title, link, channel, date
+         video.mp4
+   Playlist name\
+      playlist.txt                     ← all videos with links
+      playlist_log.txt                 ← what's done, what failed
+      001 - First video\
+      002 - ...
+```
+
+## 🛠️ Troubleshooting
+
+| Message | Fix |
 |---|---|
-| `Failed to build 'av'` | запущен Python 3.15 — запускать через `video2doc.bat` или `py -3.12` |
-| `No module named …` | повторить шаг 2 установки |
-| `HTTP Error 403 / 429` | программа сама повторит через 60 с; если не помогло — `py -3.12 -m pip install -U yt-dlp` и запустить позже |
-| PDF не создаётся | `py -3.12 -m pip install docx2pdf` (нужен MS Word) или установить LibreOffice |
+| "Sideloading of unpublished apps is disabled" | you downloaded the .msix — use the Python .exe installer |
+| "… is not recognized as the name of a cmdlet" | close and reopen PowerShell |
+| `Failed to build 'av'` | Python 3.15 is running — use `video2doc.bat` or `py -3.12` |
+| `No module named …` | repeat installation step 2 |
+| `cublas64_12.dll is not found` | handled automatically — Whisper switches to CPU |
+| `HTTP Error 403 / 429` | retried automatically after 60 s; otherwise `py -3.12 -m pip install -U yt-dlp` and try later |
+| PDF not created | install Microsoft Word + `docx2pdf`, or LibreOffice |
+
+## 📜 License
+
+MIT — free to use, modify and share.
