@@ -1,0 +1,6 @@
+faster-whisper
+python-docx
+yt-dlp
+imageio-ffmpeg
+numpy
+docx2pdf; sys_platform == "win32"
