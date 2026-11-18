@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 """
-video2doc — видео (файл, ссылка YouTube, несколько ссылок или плейлист) →
-скриншоты + субтитры → DOCX / PDF.
+video2doc — turn videos (file, YouTube link(s) or a whole playlist) into
+DOCX/PDF manuals with smart screenshots and timestamped subtitles.
 
-Примеры:
-  python video2doc.py                                    # без параметров — спросит всё сам
-  python video2doc.py урок.mp4
-  python video2doc.py "https://youtu.be/AAA" "https://youtu.be/BBB" --project FAIRINO
-  python video2doc.py "https://www.youtube.com/playlist?list=XXXX" --playlist --items 12,33,49
-  python video2doc.py урок.mp4 --at 01:20,05:43          # + скрины в нужные моменты
-  python video2doc.py урок.mp4 --every 30                # скрин каждые 30 с
+Examples:
+  py -3.12 video2doc.py                                    # no arguments — asks everything
+  py -3.12 video2doc.py lesson.mp4
+  py -3.12 video2doc.py "https://youtu.be/AAA" "https://youtu.be/BBB" --project MyCourse
+  py -3.12 video2doc.py "https://www.youtube.com/playlist?list=XXXX" --playlist --items 1-10
+  py -3.12 video2doc.py lesson.mp4 --at 01:20,05:43        # extra screenshots
+  py -3.12 video2doc.py lesson.mp4 --every 30              # a screenshot every 30 s
 
-Установка (один раз, Python 3.12):
-  py -3.12 -m pip install faster-whisper python-docx yt-dlp imageio-ffmpeg docx2pdf
-  PDF: MS Word (через docx2pdf) или LibreOffice.
+Install (once, Python 3.12):
+  py -3.12 -m pip install -r requirements.txt
+  PDF: Microsoft Word (via docx2pdf) or LibreOffice.
+
+Interface language: English or Russian, chosen from the Windows language.
+Force it with --ui en / --ui ru or the VIDEO2DOC_LANG environment variable.
 """
 import argparse, datetime, os, re, subprocess, shutil, sys, time
 from pathlib import Path
 
-# Python 3.14+ ещё не поддерживается библиотеками — перезапускаемся через 3.12, если он есть
+# Python 3.14+ is not supported by the libraries yet — restart with 3.12 if available
 if os.name == "nt" and sys.version_info[:2] >= (3, 14) and not os.environ.get("V2D_RELAUNCHED"):
     try:
         if subprocess.run(["py", "-3.12", "-c", ""], capture_output=True).returncode == 0:
@@ -28,8 +31,31 @@ if os.name == "nt" and sys.version_info[:2] >= (3, 14) and not os.environ.get("V
         pass
 
 
+def _detect_ui():
+    env = os.environ.get("VIDEO2DOC_LANG", "")
+    if env:
+        return "ru" if env[:2].lower() == "ru" else "en"
+    cis = ("ru", "kk", "uk", "be", "uz", "ky")
+    try:
+        if os.name == "nt":
+            import ctypes
+            lid = ctypes.windll.kernel32.GetUserDefaultUILanguage() & 0x3FF
+            return "ru" if lid in (0x19, 0x3F, 0x22, 0x23, 0x43, 0x40) else "en"
+        import locale
+        loc = locale.getlocale()[0] or os.environ.get("LANG", "")
+        return "ru" if loc[:2].lower() in cis else "en"
+    except Exception:
+        return "en"
+
+UI = _detect_ui()
+
+def T(ru, en):
+    """Interface text in the current language."""
+    return ru if UI == "ru" else en
+
+
 def find_ffmpeg():
-    """ffmpeg из PATH, иначе встроенный из пакета imageio-ffmpeg."""
+    """ffmpeg from PATH, otherwise the one bundled with imageio-ffmpeg."""
     p = shutil.which("ffmpeg")
     if p:
         return p
@@ -40,7 +66,7 @@ def find_ffmpeg():
         return None
 
 FFMPEG = find_ffmpeg()
-DOC_SUFFIX = ""  # версия с ИИ ставит " (ИИ)", чтобы документы лежали рядом и не путались
+DOC_SUFFIX = ""  # the AI version sets " (ИИ)" so both documents can sit side by side
 
 def is_done(folder):
     docs = [p for p in folder.glob("*.docx") if not p.name.startswith("~$")]
@@ -49,7 +75,7 @@ def is_done(folder):
     return any(not p.stem.endswith(" (ИИ)") for p in docs)
 
 
-# ---------- утилиты ----------
+# ---------- utilities ----------
 def fmt(t):
     t = int(t); return f"{t//3600:02d}:{t%3600//60:02d}:{t%60:02d}"
 
@@ -66,7 +92,7 @@ def duration(video):
     return int(m[1]) * 3600 + int(m[2]) * 60 + float(m[3]) if m else 0.0
 
 def documents_dir():
-    """Папка «Документы» (учитывает перенос в OneDrive)."""
+    """The Documents folder (handles OneDrive redirection)."""
     if os.name == "nt":
         try:
             import ctypes
@@ -99,7 +125,7 @@ def save_text(tr, txt_path, srt_path):
 
 # ---------- 1. YouTube ----------
 def parse_vtt(path):
-    """Субтитры YouTube (.vtt) → [(start, end, text)], без повторов."""
+    """YouTube subtitles (.vtt) → [(start, end, text)] without repeats."""
     out, last = [], ""
     for b in Path(path).read_text(encoding="utf-8").split("\n\n"):
         lines = b.strip().splitlines()
@@ -119,15 +145,15 @@ def glob_escape(s):
     return re.sub(r"([\[\]*?])", r"[\1]", s)
 
 def from_youtube(url, project_dir, lang, folder_name=None):
-    """Скачивает видео (до 720p) и субтитры на языке оригинала.
-    Возвращает (видео, субтитры или None, папка, название)."""
+    """Download the video (up to 720p) and subtitles in the original language.
+    Returns (video, subtitles or None, folder, title)."""
     import yt_dlp
-    print("[1/4] Скачиваю с YouTube...")
+    print(T("[1/4] Скачиваю с YouTube...", "[1/4] Downloading from YouTube..."))
     with yt_dlp.YoutubeDL({"noplaylist": True, "quiet": True}) as y:
         meta = y.extract_info(url, download=False)
     folder = project_dir / (folder_name or safe_name(meta.get("title") or meta.get("id", "video")))
     folder.mkdir(parents=True, exist_ok=True)
-    print(f"  папка: {folder}")
+    print(T(f"  папка: {folder}", f"  folder: {folder}"))
     base = {"outtmpl": str(folder / "video.%(ext)s"), "noplaylist": True,
             "ffmpeg_location": FFMPEG, "retries": 10, "fragment_retries": 10}
 
@@ -136,9 +162,11 @@ def from_youtube(url, project_dir, lang, folder_name=None):
         info = y.extract_info(url)
         video = Path(y.prepare_filename(info)).with_suffix(".mp4")
     (folder / "info.txt").write_text(
-        f"Название: {info.get('title')}\nСсылка: {info.get('webpage_url', url)}\n"
-        f"Канал: {info.get('uploader')}\nДлительность: {fmt(info.get('duration') or 0)}\n"
-        f"Обработано: {now()}\n", encoding="utf-8")
+        f"{T('Название', 'Title')}: {info.get('title')}\n"
+        f"{T('Ссылка', 'Link')}: {info.get('webpage_url', url)}\n"
+        f"{T('Канал', 'Channel')}: {info.get('uploader')}\n"
+        f"{T('Длительность', 'Duration')}: {fmt(info.get('duration') or 0)}\n"
+        f"{T('Обработано', 'Processed')}: {now()}\n", encoding="utf-8")
 
     manual = info.get("subtitles") or {}
     auto = info.get("automatic_captions") or {}
@@ -161,18 +189,18 @@ def from_youtube(url, project_dir, lang, folder_name=None):
                                    "no_warnings": True}) as y:
                 y.download([url])
         except Exception as e:
-            print(f"  субтитры '{code}' не получены ({str(e)[-60:]})")
+            print(T(f"  субтитры '{code}' не получены", f"  subtitles '{code}' not received") + f" ({str(e)[-60:]})")
             continue
         subs = sorted(folder.glob(glob_escape(video.stem) + f"*.{code}.vtt"))
         if subs:
-            print(f"  субтитры YouTube: {code}")
+            print(T(f"  субтитры YouTube: {code}", f"  YouTube subtitles: {code}"))
             return video, parse_vtt(subs[0]), folder, info.get("title") or folder.name
     return video, None, folder, info.get("title") or folder.name
 
 
-# ---------- 2. текст: субтитры или распознавание речи ----------
+# ---------- 2. text: subtitles or speech recognition ----------
 def load_audio(video, sr=16000):
-    """Звук через ffmpeg → numpy (16 кГц, моно)."""
+    """Audio via ffmpeg → numpy (16 kHz, mono)."""
     import numpy as np
     raw = subprocess.run([FFMPEG, "-nostdin", "-v", "error", "-i", str(video), "-f", "s16le",
                           "-ac", "1", "-ar", str(sr), "-"], capture_output=True, check=True).stdout
@@ -180,9 +208,10 @@ def load_audio(video, sr=16000):
 
 def transcribe(video, model_name, lang):
     from faster_whisper import WhisperModel
-    print(f"[2/4] Субтитров нет — распознаю речь (Whisper {model_name})...")
+    print(T(f"[2/4] Субтитров нет — распознаю речь (Whisper {model_name})...",
+            f"[2/4] No subtitles — recognizing speech (Whisper {model_name})..."))
     audio = load_audio(video)
-    for device in ("auto", "cpu"):  # видеокарта без CUDA-библиотек → переходим на процессор
+    for device in ("auto", "cpu"):  # GPU without CUDA libraries → fall back to CPU
         try:
             model = WhisperModel(model_name, device=device, compute_type="int8")
             segs, info = model.transcribe(audio, language=lang, vad_filter=True)
@@ -194,14 +223,15 @@ def transcribe(video, model_name, lang):
         except Exception as e:
             if device == "cpu" or not re.search(r"cublas|cudnn|cuda", str(e), re.I):
                 raise
-            print("  Видеокарта недоступна для Whisper (нет библиотек CUDA) — считаю на процессоре...")
+            print(T("  Видеокарта недоступна для Whisper (нет библиотек CUDA) — считаю на процессоре...",
+                    "  GPU not available for Whisper (no CUDA libraries) — using CPU..."))
 
 
-# ---------- 3. скриншоты ----------
-TW, TH = 64, 36  # миниатюра для сравнения кадров
+# ---------- 3. screenshots ----------
+TW, TH = 64, 36  # thumbnail size for comparing frames
 
 def thumb(video, t):
-    """Маленький серый кадр (64×36) для сравнения."""
+    """Small grayscale frame (64×36) for comparison."""
     import numpy as np
     raw = subprocess.run([FFMPEG, "-v", "error", "-ss", f"{t:.2f}", "-i", str(video),
                           "-frames:v", "1", "-vf", f"scale={TW}:{TH},format=gray",
@@ -220,7 +250,7 @@ def scene_times(video, threshold):
     return [float(x) for x in re.findall(r"pts_time:([\d.]+)", r.stderr)]
 
 def stable_time(video, t, dur):
-    """Сдвигает момент вперёд, пока кадр не перестанет меняться (не ловим переход/размытие)."""
+    """Move forward until the frame stops changing (avoid transitions and blur)."""
     for _ in range(4):
         t2 = min(t + 0.7, dur - 0.1)
         if t2 <= t or diff(thumb(video, t), thumb(video, t2)) < 3:
@@ -229,13 +259,13 @@ def stable_time(video, t, dur):
     return t
 
 def pick_times(video, every, threshold, min_gap, max_gap, dup, extra):
-    """Моменты для скриншотов: смена сцены → кадр после перехода → без дублей → без больших пропусков."""
+    """Screenshot moments: scene change → stable frame after it → no duplicates → no long gaps."""
     dur = duration(video)
     if every:
         cands = [float(t) for t in range(1, int(dur), every)]
     else:
         cands = [1.0] + [t + 1.0 for t in scene_times(video, threshold)]
-        filled, prev = [], 0.0          # закрываем длинные участки без смены кадра
+        filled, prev = [], 0.0          # fill long stretches without changes
         for t in sorted(cands) + [dur]:
             while t - prev > max_gap:
                 prev += max_gap
@@ -249,7 +279,7 @@ def pick_times(video, every, threshold, min_gap, max_gap, dup, extra):
             continue
         t = stable_time(video, t, dur)
         img = thumb(video, t)
-        if img is None or diff(img, last_img) < dup:   # почти такой же кадр — пропускаем
+        if img is None or diff(img, last_img) < dup:   # nearly the same frame — skip
             continue
         kept.append(t); last_t, last_img = t, img
     return sorted(set(round(t, 1) for t in kept) | set(e for e in extra if e < dur))
@@ -260,7 +290,7 @@ def grab(video, t, path):
                    check=True)
 
 def screenshots(video, times, folder):
-    print(f"[3/4] Сохраняю {len(times)} скриншотов...")
+    print(T(f"[3/4] Сохраняю {len(times)} скриншотов...", f"[3/4] Saving {len(times)} screenshots..."))
     if folder.exists():
         shutil.rmtree(folder)
     folder.mkdir()
@@ -272,16 +302,17 @@ def screenshots(video, times, folder):
     return shots
 
 
-# ---------- 4. документ ----------
+# ---------- 4. document ----------
 def build_docx(title, video, tr, shots, out_docx, link=""):
     from docx import Document
     from docx.shared import Cm, Pt
-    print("[4/4] Собираю документ...")
+    print(T("[4/4] Собираю документ...", "[4/4] Building the document..."))
     d = Document()
     d.styles["Normal"].font.name = "Times New Roman"
     d.styles["Normal"].font.size = Pt(12)
     d.add_heading(title, 0)
-    d.add_paragraph(f"Длительность: {fmt(duration(video))}" + (f"\nИсточник: {link}" if link else ""))
+    d.add_paragraph(f"{T('Длительность', 'Duration')}: {fmt(duration(video))}"
+                    + (f"\n{T('Источник', 'Source')}: {link}" if link else ""))
     bounds = [t for t, _ in shots] + [1e9]
     for i, (t, img) in enumerate(shots):
         d.add_heading(f"[{fmt(t)}]", 2)
@@ -311,10 +342,11 @@ def to_pdf(docx_path):
         from docx2pdf import convert  # Windows + MS Word
         convert(str(docx_path))
     except Exception:
-        print("  PDF не создан: нужен MS Word (+ docx2pdf) или LibreOffice. DOCX готов.")
+        print(T("  PDF не создан: нужен MS Word (+ docx2pdf) или LibreOffice. DOCX готов.",
+                "  PDF not created: needs MS Word (+ docx2pdf) or LibreOffice. DOCX is ready."))
 
 
-# ---------- одно видео ----------
+# ---------- one video ----------
 def process_one(a, src, project_dir, folder_name=None):
     link = ""
     tr = None
@@ -326,12 +358,13 @@ def process_one(a, src, project_dir, folder_name=None):
         title = video.stem
         out = project_dir / (folder_name or safe_name(title))
         out.mkdir(parents=True, exist_ok=True)
-        (out / "info.txt").write_text(f"Файл: {video}\nОбработано: {now()}\n", encoding="utf-8")
+        (out / "info.txt").write_text(f"{T('Файл', 'File')}: {video}\n{T('Обработано', 'Processed')}: {now()}\n",
+                                      encoding="utf-8")
 
     if tr is None or a.whisper:
         tr = transcribe(video, a.model, a.lang)
     else:
-        print(f"[2/4] Субтитры YouTube: {len(tr)} фраз")
+        print(T(f"[2/4] Субтитры YouTube: {len(tr)} фраз", f"[2/4] YouTube subtitles: {len(tr)} lines"))
     save_text(tr, out / "transcript.txt", out / "subtitles.srt")
 
     extra = [parse_time(x) for x in a.at.split(",") if x.strip()]
@@ -341,11 +374,11 @@ def process_one(a, src, project_dir, folder_name=None):
     docx_path = out / f"{safe_name(title)}{DOC_SUFFIX}.docx"
     build_docx(title, video, tr, shots, docx_path, link)
     to_pdf(docx_path)
-    print(f"Готово: {out}")
+    print(T(f"Готово: {out}", f"Done: {out}"))
     return out
 
 
-# ---------- плейлист ----------
+# ---------- playlist ----------
 def playlist_entries(url):
     import yt_dlp
     m = re.search(r"[?&]list=([\w-]+)", url)
@@ -354,10 +387,10 @@ def playlist_entries(url):
         info = y.extract_info(purl, download=False)
     items = [(i, e.get("title") or e["id"], f"https://www.youtube.com/watch?v={e['id']}")
              for i, e in enumerate(info.get("entries") or [], 1) if e and e.get("id")]
-    return info.get("title") or "Плейлист", items
+    return info.get("title") or T("Плейлист", "Playlist"), items
 
 def parse_range(text, n):
-    """'1-10,15,20-' → номера; пусто → все."""
+    """'1-10,15,20-' → numbers; empty → all."""
     text = (text or "").replace(" ", "")
     if not text:
         return set(range(1, n + 1))
@@ -376,23 +409,25 @@ def run_with_retry(a, url, project_dir, name):
             process_one(a, url, project_dir, name)
             return "OK"
         except Exception as e:
-            status = "ОШИБКА: " + re.sub(r"\x1b\[[0-9;]*m", "", str(e))
+            status = T("ОШИБКА: ", "ERROR: ") + re.sub(r"\x1b\[[0-9;]*m", "", str(e))
             print(f"  {status}")
             if attempt == 1 and re.search(r"403|429|Forbidden|Too Many", str(e)):
-                print("  YouTube ограничил доступ — жду 60 с и пробую ещё раз...")
+                print(T("  YouTube ограничил доступ — жду 60 с и пробую ещё раз...",
+                        "  YouTube limited access — waiting 60 s and retrying..."))
                 time.sleep(60)
                 continue
             return status
 
 def process_list(a, items, project_dir, log_name):
-    """items: [(номер, название, ссылка)] → каждое видео в папку «NNN - Название»."""
+    """items: [(number, title, link)] → each video into its own folder "NNN - Title"."""
     log = project_dir / log_name
     ok = fail = skip = 0
     for k, (i, title, url) in enumerate(items, 1):
         name = f"{i:03d} - {safe_name(title, 70)}" if i else None
         print(f"\n===== [{k}/{len(items)}] {title} =====")
         if name and not a.redo and is_done(project_dir / name):
-            print("  уже готово — пропускаю (--redo, чтобы переделать)")
+            print(T("  уже готово — пропускаю (--redo, чтобы переделать)",
+                    "  already done — skipping (use --redo to redo)"))
             skip += 1
             continue
         status = run_with_retry(a, url, project_dir, name)
@@ -400,53 +435,62 @@ def process_list(a, items, project_dir, log_name):
         with open(log, "a", encoding="utf-8") as f:
             f.write(f"{now()} | {i or '-':>3} | {title} | {status}\n")
         if k < len(items):
-            time.sleep(5)  # пауза, чтобы YouTube не ограничил запросы
-    print(f"\nГотово: успешно {ok}, пропущено {skip}, с ошибкой {fail}. Журнал: {log}")
+            time.sleep(5)  # pause so YouTube doesn't rate-limit us
+    print(T(f"\nГотово: успешно {ok}, пропущено {skip}, с ошибкой {fail}. Журнал: {log}",
+            f"\nFinished: {ok} done, {skip} skipped, {fail} failed. Log: {log}"))
     return project_dir
 
 
 # ---------- main ----------
 def main():
-    ap = argparse.ArgumentParser(description="Видео → скриншоты + субтитры (DOCX/PDF)")
-    ap.add_argument("video", nargs="+", help="видеофайл, одна или несколько ссылок YouTube")
-    ap.add_argument("--project", default="", help="папка проекта внутри Документы\\video2doc")
-    ap.add_argument("--root", default=None, help="главная папка (по умолчанию Документы\\video2doc)")
-    ap.add_argument("--playlist", action="store_true", help="обработать плейлист из ссылки")
-    ap.add_argument("--items", default="", help="номера видео плейлиста: 1-10,15 (пусто — все)")
-    ap.add_argument("--redo", action="store_true", help="переделать уже готовые видео плейлиста")
-    ap.add_argument("--lang", default=None, help="язык речи (обычно определяется сам)")
-    ap.add_argument("--whisper", action="store_true", help="распознавать речь даже при наличии субтитров")
-    ap.add_argument("--model", default="small", help="модель Whisper: tiny/base/small/medium")
-    ap.add_argument("--every", type=int, default=0, help="скрин каждые N с вместо поиска смены кадра")
-    ap.add_argument("--threshold", type=float, default=0.15, help="чувствительность смены кадра 0..1")
-    ap.add_argument("--min-gap", type=float, default=4, help="мин. интервал между скринами, с")
-    ap.add_argument("--max-gap", type=float, default=40, help="макс. интервал без скрина, с")
-    ap.add_argument("--dup", type=float, default=4, help="порог «почти тот же кадр» (больше — меньше скринов)")
-    ap.add_argument("--at", default="", help="доп. скрины: 01:20,05:43")
+    ap = argparse.ArgumentParser(description="Video → screenshots + subtitles (DOCX/PDF)")
+    ap.add_argument("video", nargs="+", help="video file, or one or more YouTube links")
+    ap.add_argument("--project", default="", help="project folder inside Documents\\video2doc")
+    ap.add_argument("--root", default=None, help="main folder (default: Documents\\video2doc)")
+    ap.add_argument("--playlist", action="store_true", help="process the playlist from the link")
+    ap.add_argument("--items", default="", help="playlist numbers: 1-10,15 (empty — all)")
+    ap.add_argument("--redo", action="store_true", help="redo videos that are already finished")
+    ap.add_argument("--lang", default=None, help="speech language (usually detected automatically)")
+    ap.add_argument("--whisper", action="store_true", help="recognize speech even if subtitles exist")
+    ap.add_argument("--model", default="small", help="Whisper model: tiny/base/small/medium")
+    ap.add_argument("--every", type=int, default=0, help="a screenshot every N s instead of change detection")
+    ap.add_argument("--threshold", type=float, default=0.15, help="change sensitivity 0..1")
+    ap.add_argument("--min-gap", type=float, default=4, help="min seconds between screenshots")
+    ap.add_argument("--max-gap", type=float, default=40, help="max seconds without a screenshot")
+    ap.add_argument("--dup", type=float, default=4, help="'same frame' threshold (higher — fewer screenshots)")
+    ap.add_argument("--at", default="", help="extra screenshots: 01:20,05:43")
+    ap.add_argument("--ui", choices=["en", "ru"], default=None, help="interface language")
 
-    if len(sys.argv) == 1:  # запуск без параметров — спрашиваем
+    if len(sys.argv) == 1:  # no arguments — interactive mode
         root = documents_dir() / "video2doc"
         projects = sorted(p.name for p in root.glob("*") if p.is_dir()) if root.exists() else []
-        print(f"Папка для результатов: {root}")
+        print(T(f"Папка для результатов: {root}", f"Output folder: {root}"))
         if projects:
-            print("Проекты:", ", ".join(f"{i}) {p}" for i, p in enumerate(projects, 1)))
-        pr = input("Проект (номер, новое название или Enter — «Без проекта»): ").strip()
+            print(T("Проекты:", "Projects:"), ", ".join(f"{i}) {p}" for i, p in enumerate(projects, 1)))
+        pr = input(T("Проект (номер, новое название или Enter — «Без проекта»): ",
+                     "Project (number, new name or Enter — \"No project\"): ")).strip()
         if pr.isdigit() and 1 <= int(pr) <= len(projects):
             pr = projects[int(pr) - 1]
-        src = input("Ссылка YouTube (можно несколько через пробел) или путь к видео: ").strip()
+        src = input(T("Ссылка YouTube (можно несколько через пробел) или путь к видео: ",
+                      "YouTube link (several separated by spaces) or path to a video: ")).strip()
         srcs = src.split() if src.count("http") > 1 else [src.strip('"')]
         args = [*srcs, "--project", pr]
         if len(srcs) == 1 and "list=" in src:
-            it = input("Это плейлист. Какие видео? Enter — только это видео, "
-                       "«все» — весь плейлист, или номера, напр. 12,33,49: ").strip().lower()
+            it = input(T("Это плейлист. Какие видео? Enter — только это видео, "
+                         "«все» — весь плейлист, или номера, напр. 12,33,49: ",
+                         "This is a playlist. Which videos? Enter — only this one, "
+                         "'all' — the whole playlist, or numbers, e.g. 12,33,49: ")).strip().lower()
             if it:
                 args.append("--playlist")
-                if it not in ("все", "all", "y"):
+                if it not in ("все", "all", "y", "a"):
                     args += ["--items", it]
         a = ap.parse_args(args)
     else:
         a = ap.parse_args()
 
+    global UI
+    if a.ui:
+        UI = a.ui
     need = ["faster_whisper", "docx", "numpy"]
     if any(s.startswith("http") for s in a.video): need.append("yt_dlp")
     if os.name == "nt" and not find_soffice(): need.append("docx2pdf")
@@ -454,21 +498,24 @@ def main():
              "docx2pdf": "docx2pdf", "numpy": "numpy"}
     missing = [names[m] for m in need if not _has(m)]
     if missing:
-        print(f"Не установлены библиотеки: {', '.join(missing)}\nPython: {sys.executable}")
-        if input("Установить сейчас? (y/n): ").strip().lower().startswith(("y", "д")):
+        print(T("Не установлены библиотеки: ", "Missing libraries: ") + ", ".join(missing)
+              + f"\nPython: {sys.executable}")
+        if input(T("Установить сейчас? (y/n): ", "Install now? (y/n): ")).strip().lower().startswith(("y", "д")):
             subprocess.run([sys.executable, "-m", "pip", "install", *missing, "imageio-ffmpeg"])
             import importlib; importlib.invalidate_caches()
             if any(not _has(m) for m in need):
-                raise SystemExit("Установка не удалась. Используйте Python 3.12: "
-                                 "py -3.12 -m pip install " + " ".join(missing))
+                raise SystemExit(T("Установка не удалась. Используйте Python 3.12: ",
+                                   "Installation failed. Use Python 3.12: ")
+                                 + "py -3.12 -m pip install " + " ".join(missing))
         else:
-            raise SystemExit(f'Выполните:\n  "{sys.executable}" -m pip install {" ".join(missing)}')
+            raise SystemExit(T("Выполните:", "Run:") + f'\n  "{sys.executable}" -m pip install {" ".join(missing)}')
     if not FFMPEG:
-        raise SystemExit("Не найден ffmpeg. Выполните:\n  py -3.12 -m pip install imageio-ffmpeg")
+        raise SystemExit(T("Не найден ffmpeg. Выполните:", "ffmpeg not found. Run:")
+                         + "\n  py -3.12 -m pip install imageio-ffmpeg")
 
     root = Path(a.root) if a.root else documents_dir() / "video2doc"
     if a.playlist and a.video[0].startswith("http"):
-        print("Получаю список видео плейлиста...")
+        print(T("Получаю список видео плейлиста...", "Getting the playlist..."))
         ptitle, items = playlist_entries(a.video[0])
         project_dir = root / safe_name(a.project or ptitle)
         project_dir.mkdir(parents=True, exist_ok=True)
@@ -476,10 +523,11 @@ def main():
             "\n".join(f"{i:03d} | {t} | {u}" for i, t, u in items), encoding="utf-8")
         chosen = parse_range(a.items, len(items))
         todo = [x for x in items if x[0] in chosen]
-        print(f"Плейлист «{ptitle}»: всего {len(items)}, к обработке {len(todo)}")
+        print(T(f"Плейлист «{ptitle}»: всего {len(items)}, к обработке {len(todo)}",
+                f"Playlist \"{ptitle}\": {len(items)} videos, {len(todo)} to process"))
         out = process_list(a, todo, project_dir, "playlist_log.txt")
     else:
-        project_dir = root / safe_name(a.project or "Без проекта")
+        project_dir = root / safe_name(a.project or T("Без проекта", "No project"))
         project_dir.mkdir(parents=True, exist_ok=True)
         if len(a.video) == 1:
             out = process_one(a, a.video[0], project_dir)
@@ -497,8 +545,8 @@ if __name__ == "__main__":
             print(f"\n{e.code}")
     except BaseException:
         import traceback
-        print("\nОшибка:")
+        print(T("\nОшибка:", "\nError:"))
         traceback.print_exc()
     finally:
         if len(sys.argv) == 1:
-            input("\nНажмите Enter, чтобы закрыть...")
+            input(T("\nНажмите Enter, чтобы закрыть...", "\nPress Enter to close..."))
